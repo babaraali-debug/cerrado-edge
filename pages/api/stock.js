@@ -1,12 +1,13 @@
 export default async function handler(req, res) {
-  const { ticker, days } = req.query;
+  const { ticker } = req.query;
   
   if (!ticker) {
     return res.status(400).json({ error: 'Ticker required' });
   }
 
   try {
-    const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=full&apikey=${process.env.AV_KEY}`;
+    const apiKey = process.env.AV_KEY;
+    const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=full&apikey=${apiKey}`;
     const response = await fetch(url);
     const data = await response.json();
     
