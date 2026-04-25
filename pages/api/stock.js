@@ -18,6 +18,8 @@ export default async function handler(req, res) {
       return res.status(429).json({ error: 'API limit reached. Wait 1 minute.' });
     }
 
+    // Cache for 24 hours — only calls Alpha Vantage once per ticker per day
+    res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate');
     res.status(200).json(data);
   } catch(e) {
     res.status(500).json({ error: 'Failed to fetch data' });
