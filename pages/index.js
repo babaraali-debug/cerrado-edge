@@ -40,6 +40,14 @@ function calcStats(ts, numDays) {
   return { closes, opens, highs, lows, volumes, changes, avgChange, avgAbsChange, maxGain, maxLoss, avgVol, avgIntraday, maxIntraday, stdDev, annualVol, buckets, dates, intradayRanges, randomBaseline };
 }
 
+function calcKelly(winRate, avgWin, avgLoss) {
+  const w = winRate / 100;
+  const l = 1 - w;
+  const ratio = Math.abs(parseFloat(avgWin)) / Math.abs(parseFloat(avgLoss));
+  const kelly = w - (l / ratio);
+  return Math.max(0, Math.min(kelly, 0.25)); // Cap at 25% max
+}
+
 function analyzePatterns(stats) {
   const { closes, changes, volumes, avgVol, stdDev, highs, lows, randomBaseline } = stats;
   const patterns = [];
@@ -51,7 +59,8 @@ function analyzePatterns(stats) {
     const al = lArr.length ? (lArr.reduce((a, b) => a + b, 0) / lArr.length).toFixed(1) : '0';
     const ev = ((wr / 100) * parseFloat(aw) - ((100 - wr) / 100) * parseFloat(al)).toFixed(2);
     const edgeVsRandom = wr - randomBaseline;
-    patterns.push({ name, instances, winRate: wr, avgWin: '+' + aw + '%', avgLoss: '-' + al + '%', ev: parseFloat(ev), evStr: (ev >= 0 ? '+' : '') + ev + '%', signal: wr >= 60 ? 'green' : wr >= 50 ? 'yellow' : 'red', desc, reliable, edgeVsRandom });
+    const kelly = calcKelly(wr, aw, al);
+    patterns.push({ name, instances, winRate: wr, avgWin: '+' + aw + '%', avgLoss: '-' + al + '%', ev: parseFloat(ev), evStr: (ev >= 0 ? '+' : '') + ev + '%', signal: wr >= 60 ? 'green' : wr >= 50 ? 'yellow' : 'red', desc, reliable, edgeVsRandom, kelly, rawAvgWin: aw, rawAvgLoss: al });
   }
 
   let w = 0, wA = [], lA = [], cnt = 0;
@@ -103,16 +112,16 @@ function analyzePatterns(stats) {
 
   if (last3.every(c => c < 0) && reliablePatterns.find(p => p.name === '3 Red Days Streak')) {
     const pat = reliablePatterns.find(p => p.name === '3 Red Days Streak');
-    activeSignal = { pattern: '3 Red Days Streak', direction: 'BULLISH', confidence: pat.winRate, instances: pat.instances, entry: price.toFixed(2), stopLoss: (price * (1 - stdDev / 100 * 1.5)).toFixed(2), target: (price * (1 + stdDev / 100 * 2)).toFixed(2), rr: '1:' + (stdDev * 2 / (stdDev * 1.5)).toFixed(1), maxAdverse: (-stdDev * 1.5).toFixed(1) + '%', reliable: pat.reliable };
+    activeSignal = { pattern: '3 Red Days Streak', direction: 'BULLISH', confidence: pat.winRate, instances: pat.instances, entry: price.toFixed(2), stopLoss: (price * (1 - stdDev / 100 * 1.5)).toFixed(2), target: (price * (1 + stdDev / 100 * 2)).toFixed(2), rr: '1:' + (stdDev * 2 / (stdDev * 1.5)).toFixed(1), maxAdverse: (-stdDev * 1.5).toFixed(1) + '%', reliable: pat.reliable, kelly: pat.kelly, rawAvgWin: pat.rawAvgWin, rawAvgLoss: pat.rawAvgLoss };
   } else if (last1 <= -3 && reliablePatterns.find(p => p.name === 'Gap Down 3%+')) {
     const pat = reliablePatterns.find(p => p.name === 'Gap Down 3%+');
-    activeSignal = { pattern: 'Gap Down 3%+', direction: 'BULLISH', confidence: pat.winRate, instances: pat.instances, entry: price.toFixed(2), stopLoss: (price * 0.96).toFixed(2), target: (price * 1.04).toFixed(2), rr: '1:1.5', maxAdverse: '-4.0%', reliable: pat.reliable };
+    activeSignal = { pattern: 'Gap Down 3%+', direction: 'BULLISH', confidence: pat.winRate, instances: pat.instances, entry: price.toFixed(2), stopLoss: (price * 0.96).toFixed(2), target: (price * 1.04).toFixed(2), rr: '1:1.5', maxAdverse: '-4.0%', reliable: pat.reliable, kelly: pat.kelly, rawAvgWin: pat.rawAvgWin, rawAvgLoss: pat.rawAvgLoss };
   } else if (isInsideDay && reliablePatterns.find(p => p.name === 'Inside Day Breakout')) {
     const pat = reliablePatterns.find(p => p.name === 'Inside Day Breakout');
-    activeSignal = { pattern: 'Inside Day Breakout', direction: 'WATCH', confidence: pat.winRate, instances: pat.instances, entry: price.toFixed(2), stopLoss: (price * 0.97).toFixed(2), target: (price * 1.04).toFixed(2), rr: '1:1.8', maxAdverse: '-3.0%', reliable: pat.reliable };
+    activeSignal = { pattern: 'Inside Day Breakout', direction: 'WATCH', confidence: pat.winRate, instances: pat.instances, entry: price.toFixed(2), stopLoss: (price * 0.97).toFixed(2), target: (price * 1.04).toFixed(2), rr: '1:1.8', maxAdverse: '-3.0%', reliable: pat.reliable, kelly: pat.kelly, rawAvgWin: pat.rawAvgWin, rawAvgLoss: pat.rawAvgLoss };
   } else if (lastVol > avgVol * 1.8 && Math.abs(last1) < 0.8 && reliablePatterns.find(p => p.name === 'Volume Spike No Move')) {
     const pat = reliablePatterns.find(p => p.name === 'Volume Spike No Move');
-    activeSignal = { pattern: 'Volume Spike No Move', direction: 'WATCH', confidence: pat.winRate, instances: pat.instances, entry: price.toFixed(2), stopLoss: (price * 0.97).toFixed(2), target: (price * 1.04).toFixed(2), rr: '1:1.8', maxAdverse: '-3.0%', reliable: pat.reliable };
+    activeSignal = { pattern: 'Volume Spike No Move', direction: 'WATCH', confidence: pat.winRate, instances: pat.instances, entry: price.toFixed(2), stopLoss: (price * 0.97).toFixed(2), target: (price * 1.04).toFixed(2), rr: '1:1.8', maxAdverse: '-3.0%', reliable: pat.reliable, kelly: pat.kelly, rawAvgWin: pat.rawAvgWin, rawAvgLoss: pat.rawAvgLoss };
   }
 
   return { patterns, activeSignal, randomBaseline };
@@ -125,12 +134,19 @@ function fmtVol(v) {
   return v.toFixed(0);
 }
 
+function fmtMoney(n) {
+  if (n >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+  return '$' + n.toFixed(0);
+}
+
 const N = '#0f1f5c'; const G = '#f5c842'; const BG = '#f0f4ff'; const W = '#ffffff';
 const BORDER = '#dde3f5'; const MUTED = '#6b7ab5'; const TEXT = '#0a1540';
 
 export default function Home() {
   const [ticker, setTicker] = useState('');
   const [days, setDays] = useState(1000);
+  const [portfolio, setPortfolio] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
@@ -155,10 +171,21 @@ export default function Home() {
     setLoading(false);
   };
 
+  const portfolioVal = parseFloat(portfolio.replace(/[^0-9.]/g, '')) || 0;
+
   const s = result?.stats;
   const sig = result?.activeSignal;
   const sigCol = sig?.direction === 'BULLISH' ? '#16a34a' : sig?.direction === 'BEARISH' ? '#dc2626' : '#d97706';
   const sigBg = sig?.direction === 'BULLISH' ? '#f0fdf4' : sig?.direction === 'BEARISH' ? '#fef2f2' : '#fffbeb';
+
+  // Kelly calculations
+  const kellyPct = sig?.kelly || 0;
+  const fullKellyDollar = portfolioVal * kellyPct;
+  const halfKellyDollar = portfolioVal * kellyPct * 0.5;
+  const quarterKellyDollar = portfolioVal * kellyPct * 0.25;
+  const fullKellyPct = (kellyPct * 100).toFixed(1);
+  const halfKellyPct = (kellyPct * 50).toFixed(1);
+  const quarterKellyPct = (kellyPct * 25).toFixed(1);
 
   return (
     <>
@@ -194,10 +221,11 @@ export default function Home() {
       </nav>
 
       <div style={{ maxWidth: 860, margin: '0 auto', padding: '32px 24px 80px' }}>
+
         <div style={{ textAlign: 'center', padding: '40px 20px 32px', maxWidth: 580, margin: '0 auto 32px' }}>
-          <div style={{ display: 'inline-block', fontSize: 10, letterSpacing: 3, color: N, marginBottom: 14, background: '#fdf3d0', padding: '5px 14px', borderRadius: 20, fontWeight: 600 }}>◎ REAL DATA · PATTERN PROBABILITY · QUANT SIGNALS</div>
+          <div style={{ display: 'inline-block', fontSize: 10, letterSpacing: 3, color: N, marginBottom: 14, background: '#fdf3d0', padding: '5px 14px', borderRadius: 20, fontWeight: 600 }}>◎ REAL DATA · PATTERN PROBABILITY · KELLY SIZING</div>
           <h1 style={{ fontFamily: 'Syne,sans-serif', fontSize: 40, fontWeight: 800, lineHeight: 1.1, marginBottom: 12, color: N }}>Movement<br />Analyzer</h1>
-          <p style={{ color: MUTED, fontSize: 13, lineHeight: 1.8 }}>Real price history · 6 statistical patterns · Random baseline benchmark<br />Trade signals with entry, stop loss and target</p>
+          <p style={{ color: MUTED, fontSize: 13, lineHeight: 1.8 }}>Real price history · 6 statistical patterns · Random baseline benchmark<br />Kelly position sizing · Trade signals with defined risk</p>
         </div>
 
         <div className="card" style={{ marginBottom: 24, padding: '24px 28px' }}>
@@ -211,6 +239,17 @@ export default function Home() {
               {loading ? '···' : 'ANALYSE'}
             </button>
           </div>
+
+          {/* Portfolio size input */}
+          <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 11, color: MUTED, fontWeight: 500, whiteSpace: 'nowrap' }}>Portfolio size (for Kelly sizing):</div>
+            <input value={portfolio} onChange={e => setPortfolio(e.target.value)}
+              placeholder="e.g. 200000"
+              style={{ width: 160, background: BG, border: `1.5px solid ${BORDER}`, borderRadius: 8, padding: '8px 12px', color: TEXT, fontSize: 13, outline: 'none' }}
+              onFocus={e => e.target.style.borderColor = G} onBlur={e => e.target.style.borderColor = BORDER} />
+            {portfolioVal > 0 && <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 600 }}>✓ {fmtMoney(portfolioVal)} set</span>}
+          </div>
+
           <div style={{ fontSize: 10, color: '#a0aec0', marginBottom: 14 }}>US: MSFT · AAPL · TSLA &nbsp;|&nbsp; TSX: CNQ.TO · SU.TO &nbsp;|&nbsp; TSX-V: IFOS.V · LUCA.V</div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
             {[{ label: '1000 Days ★', val: 1000 }, { label: '750 Days', val: 750 }, { label: '500 Days', val: 500 }].map(tf => (
@@ -237,12 +276,14 @@ export default function Home() {
         {!loading && !result && !error && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 260, gap: 10 }}>
             <div style={{ fontSize: 40, opacity: 0.1 }}>◎</div>
-            <div style={{ color: '#cbd5e0', fontSize: 11, letterSpacing: 2 }}>ENTER TICKER · PRESS ANALYSE</div>
+            <div style={{ color: '#cbd5e0', fontSize: 11, letterSpacing: 2 }}>ENTER TICKER · SET PORTFOLIO SIZE · PRESS ANALYSE</div>
           </div>
         )}
 
         {!loading && result && s && (
           <div className="fade">
+
+            {/* Price Banner */}
             <div className="card" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', background: N }}>
               <div>
                 <div style={{ fontFamily: 'Syne,sans-serif', fontSize: 22, fontWeight: 800, color: W }}>{activeTicker}</div>
@@ -260,9 +301,10 @@ export default function Home() {
             </div>
 
             <div style={{ background: '#fdf3d0', border: '1px solid #f5c84244', borderRadius: 10, padding: '10px 16px', marginBottom: 20, fontSize: 12, color: '#92400e' }}>
-              <strong>Random Baseline: {result.randomBaseline}%</strong> — Buying on any random day gives this win rate. Only patterns that beat this number have a real edge.
+              <strong>Random Baseline: {result.randomBaseline}%</strong> — Buying on any random day gives this win rate. Only patterns that beat this number have a real trading edge.
             </div>
 
+            {/* Stats */}
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: 2, marginBottom: 10, textTransform: 'uppercase', fontWeight: 500 }}>Movement Statistics</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginBottom: 24 }}>
               {[
@@ -281,6 +323,7 @@ export default function Home() {
               ))}
             </div>
 
+            {/* Distribution */}
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: 2, marginBottom: 10, textTransform: 'uppercase', fontWeight: 500 }}>Daily Move Distribution</div>
             <div className="card" style={{ marginBottom: 24 }}>
               {Object.entries(s.buckets).map(([label, count]) => {
@@ -300,6 +343,7 @@ export default function Home() {
               })}
             </div>
 
+            {/* Active Signal */}
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: 2, marginBottom: 10, textTransform: 'uppercase', fontWeight: 500 }}>Active Signal</div>
             {sig ? (
               <div style={{ background: sigBg, border: `2px solid ${sigCol}33`, borderRadius: 14, padding: 22, marginBottom: 24 }}>
@@ -313,6 +357,7 @@ export default function Home() {
                     <div style={{ fontSize: 11, fontWeight: 700, padding: '5px 14px', borderRadius: 20, background: sigCol, color: W, letterSpacing: 1, fontFamily: 'Syne,sans-serif' }}>{sig.direction}</div>
                   </div>
                 </div>
+
                 {[{ label: 'Win probability', val: sig.confidence, col: sigCol }, { label: 'Loss probability', val: 100 - sig.confidence, col: '#94a3b8' }].map(pb => (
                   <div key={pb.label} style={{ margin: '10px 0' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: MUTED, marginBottom: 5, fontWeight: 500 }}>
@@ -323,6 +368,8 @@ export default function Home() {
                     </div>
                   </div>
                 ))}
+
+                {/* Trade levels */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginTop: 16 }}>
                   {[{ label: 'Entry', val: '$' + sig.entry, col: TEXT, sub: 'Current price' }, { label: 'Stop loss', val: '$' + sig.stopLoss, col: '#dc2626', sub: 'Max loss: ' + sig.maxAdverse }, { label: 'Target', val: '$' + sig.target, col: '#16a34a', sub: 'R/R: ' + sig.rr }].map(tc => (
                     <div key={tc.label} style={{ background: W, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '12px 14px', textAlign: 'center' }}>
@@ -332,10 +379,46 @@ export default function Home() {
                     </div>
                   ))}
                 </div>
+
+                {/* Kelly Position Sizing */}
+                <div style={{ marginTop: 16, background: N, borderRadius: 12, padding: '18px 20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, color: G, fontWeight: 700, letterSpacing: 1 }}>◈ KELLY POSITION SIZING</div>
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>Mathematically optimal bet size</div>
+                  </div>
+
+                  {portfolioVal > 0 ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+                      {[
+                        { label: 'Full Kelly', pct: fullKellyPct, dollar: fullKellyDollar, desc: 'Mathematically optimal', col: G, warning: true },
+                        { label: 'Half Kelly', pct: halfKellyPct, dollar: halfKellyDollar, desc: '★ Recommended', col: '#4ade80', warning: false },
+                        { label: 'Quarter Kelly', pct: quarterKellyPct, dollar: quarterKellyDollar, desc: 'Conservative', col: '#86efac', warning: false },
+                      ].map(k => (
+                        <div key={k.label} style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 10, padding: '12px 14px', textAlign: 'center', border: k.label === 'Half Kelly' ? `1px solid ${k.col}44` : '1px solid rgba(255,255,255,0.08)' }}>
+                          <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', letterSpacing: 1, marginBottom: 6, textTransform: 'uppercase' }}>{k.label}</div>
+                          <div style={{ fontFamily: 'Syne,sans-serif', fontSize: 20, fontWeight: 800, color: k.col }}>{fmtMoney(k.dollar)}</div>
+                          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', marginTop: 3 }}>{k.pct}% of portfolio</div>
+                          <div style={{ fontSize: 9, color: k.col, marginTop: 4, fontWeight: 600 }}>{k.desc}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'center', padding: '12px 0' }}>
+                      <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>Enter your portfolio size above to see Kelly position sizing</div>
+                      <div style={{ color: G, fontSize: 11, marginTop: 4 }}>Full Kelly: {fullKellyPct}% &nbsp;·&nbsp; Half Kelly: {halfKellyPct}% &nbsp;·&nbsp; Quarter Kelly: {quarterKellyPct}%</div>
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(255,255,255,0.04)', borderRadius: 8, fontSize: 11, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>
+                    Kelly formula: Win Rate − (Loss Rate ÷ Win/Loss Ratio) = {fullKellyPct}% full Kelly.
+                    Based on {sig.instances} historical instances · Avg win {sig.rawAvgWin}% · Avg loss {sig.rawAvgLoss}%
+                  </div>
+                </div>
+
                 <div style={{ background: W, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '12px 16px', marginTop: 14 }}>
                   <div style={{ fontSize: 10, color: MUTED, letterSpacing: 1, marginBottom: 5, fontWeight: 500, textTransform: 'uppercase' }}>Edge vs Random</div>
                   <div style={{ fontSize: 12, color: TEXT, lineHeight: 1.7 }}>
-                    Based on <strong>{sig.instances} historical instances</strong>. Win rate: {sig.confidence}% vs random baseline {result.randomBaseline}%. Real edge above random: <strong style={{ color: sig.confidence > result.randomBaseline ? '#16a34a' : '#dc2626' }}>{sig.confidence > result.randomBaseline ? '+' : ''}{sig.confidence - result.randomBaseline}%</strong>
+                    Based on <strong>{sig.instances} historical instances</strong>. Win rate: {sig.confidence}% vs random baseline {result.randomBaseline}%. Real edge: <strong style={{ color: sig.confidence > result.randomBaseline ? '#16a34a' : '#dc2626' }}>{sig.confidence > result.randomBaseline ? '+' : ''}{sig.confidence - result.randomBaseline}%</strong>
                   </div>
                 </div>
               </div>
@@ -347,19 +430,22 @@ export default function Home() {
               </div>
             )}
 
+            {/* Patterns */}
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: 2, marginBottom: 6, textTransform: 'uppercase', fontWeight: 500 }}>Historical Patterns — 6 Signals</div>
-            <div style={{ fontSize: 10, color: '#a0aec0', marginBottom: 12 }}>Random baseline: {result.randomBaseline}% · 30+ instances required for reliability · Sorted by expected value</div>
+            <div style={{ fontSize: 10, color: '#a0aec0', marginBottom: 12 }}>Random baseline: {result.randomBaseline}% · 30+ instances required · Sorted by expected value</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
               {result.patterns.map((p, i) => {
                 const col = p.signal === 'green' ? '#16a34a' : p.signal === 'red' ? '#dc2626' : '#d97706';
                 const bg = p.signal === 'green' ? '#f0fdf4' : p.signal === 'red' ? '#fef2f2' : '#fffbeb';
                 const edgeCol = p.edgeVsRandom > 5 ? '#16a34a' : p.edgeVsRandom < -5 ? '#dc2626' : '#d97706';
+                const kellyPctDisplay = (p.kelly * 100).toFixed(1);
+                const halfKellyDisplay = (p.kelly * 50).toFixed(1);
                 return (
                   <div key={i} className="card" style={{ padding: '14px 16px', opacity: p.reliable ? 1 : 0.7 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontSize: 13, color: TEXT, fontWeight: 600 }}>{p.name}</span>
-                        {!p.reliable && <span style={{ fontSize: 9, color: '#d97706', background: '#fffbeb', border: '1px solid #f5c84266', padding: '2px 7px', borderRadius: 10, fontWeight: 600 }}>⚠️ LOW SAMPLE ({p.instances} instances)</span>}
+                        {!p.reliable && <span style={{ fontSize: 9, color: '#d97706', background: '#fffbeb', border: '1px solid #f5c84266', padding: '2px 7px', borderRadius: 10, fontWeight: 600 }}>⚠️ LOW SAMPLE ({p.instances})</span>}
                       </div>
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                         <span style={{ fontSize: 10, color: edgeCol, fontWeight: 600 }}>Edge: {p.edgeVsRandom > 0 ? '+' : ''}{p.edgeVsRandom}% vs random</span>
@@ -371,6 +457,7 @@ export default function Home() {
                       <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 500 }}>Avg win: {p.avgWin}</span>
                       <span style={{ fontSize: 11, color: '#dc2626', fontWeight: 500 }}>Avg loss: {p.avgLoss}</span>
                       <span style={{ fontSize: 11, fontWeight: 700, color: p.ev >= 0 ? '#16a34a' : '#dc2626' }}>EV: {p.evStr}</span>
+                      {p.reliable && p.kelly > 0 && <span style={{ fontSize: 11, color: N, fontWeight: 600 }}>Kelly: {halfKellyDisplay}% half · {kellyPctDisplay}% full</span>}
                     </div>
                     <div style={{ fontSize: 11, color: MUTED }}>{p.desc}</div>
                   </div>
@@ -378,12 +465,13 @@ export default function Home() {
               })}
             </div>
 
+            {/* EV Table */}
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: 2, marginBottom: 10, textTransform: 'uppercase', fontWeight: 500 }}>Expected Value Summary</div>
             <div className="card" style={{ overflowX: 'auto', marginBottom: 24 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead>
                   <tr style={{ borderBottom: `2px solid ${BG}` }}>
-                    {['Pattern', 'Instances', 'Win rate', 'Edge vs Random', 'Avg win', 'Avg loss', 'Exp. value', 'Reliable'].map(h => (
+                    {['Pattern', 'Instances', 'Win rate', 'Edge vs Random', 'Avg win', 'Avg loss', 'Exp. value', 'Half Kelly', 'Reliable'].map(h => (
                       <th key={h} style={{ fontSize: 9, color: MUTED, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>{h}</th>
                     ))}
                   </tr>
@@ -398,19 +486,21 @@ export default function Home() {
                       <td style={{ padding: '10px 12px', color: '#16a34a', fontWeight: 500 }}>{p.avgWin}</td>
                       <td style={{ padding: '10px 12px', color: '#dc2626', fontWeight: 500 }}>{p.avgLoss}</td>
                       <td style={{ padding: '10px 12px', color: p.ev >= 0 ? '#16a34a' : '#dc2626', fontWeight: 700 }}>{p.evStr}</td>
+                      <td style={{ padding: '10px 12px', color: N, fontWeight: 600 }}>{(p.kelly * 50).toFixed(1)}%</td>
                       <td style={{ padding: '10px 12px' }}><span style={{ fontSize: 10, fontWeight: 600, color: p.reliable ? '#16a34a' : '#d97706' }}>{p.reliable ? '✓ Yes' : '⚠️ No'}</span></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+
           </div>
         )}
       </div>
 
       <footer style={{ background: N, padding: '24px 32px', textAlign: 'center', marginTop: 40 }}>
         <div style={{ fontFamily: 'Syne,sans-serif', fontSize: 15, fontWeight: 800, color: W, marginBottom: 6 }}>Cerrado Edge</div>
-        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>Data from Yahoo Finance · Not financial advice · Past patterns do not guarantee future results</div>
+        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>Data from Yahoo Finance · Not financial advice · Kelly sizing is a mathematical guide, not a guarantee</div>
       </footer>
     </>
   );
