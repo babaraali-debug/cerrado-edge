@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import Head from 'next/head';
+import { computeConfidenceScore } from '../utils/confidenceScore';
+import ConfidenceGauge from '../components/ConfidenceGauge';
 
 const MIN_SAMPLE = 30;
 
@@ -40,12 +42,10 @@ function calcStats(ts, numDays) {
   return { closes, opens, highs, lows, volumes, changes, avgChange, avgAbsChange, maxGain, maxLoss, avgVol, avgIntraday, maxIntraday, stdDev, annualVol, buckets, dates, intradayRanges, randomBaseline };
 }
 
-// Calculate win rate at each day horizon after a signal
 function calcDecay(signalIndices, changes, horizons = [1, 2, 3, 5, 10]) {
   return horizons.map(h => {
     const valid = signalIndices.filter(i => i - h >= 0);
     if (valid.length < 3) return { day: h, winRate: null, instances: 0 };
-    // Forward return = cumulative return from signal to h days later
     const wins = valid.filter(i => {
       const fwdReturn = changes.slice(i - h, i).reduce((acc, c) => acc + c, 0);
       return fwdReturn > 0;
@@ -163,6 +163,19 @@ function fmtMoney(n) {
   return '$' + n.toFixed(0);
 }
 
+function getConfidence(winRate, randomBaseline, instances, kelly, decay) {
+  const decaySlope = decay && decay.length >= 2
+    ? (decay[decay.length - 1].winRate - decay[0].winRate) / 9
+    : null;
+  return computeConfidenceScore({
+    winRate: winRate / 100,
+    randomWinRate: randomBaseline / 100,
+    sampleSize: instances,
+    kellyFraction: kelly,
+    decaySlope,
+  });
+}
+
 function DecayCurve({ decay, randomBaseline, patternName }) {
   const maxWR = Math.max(...decay.filter(d => d.winRate !== null).map(d => d.winRate), randomBaseline + 5);
   const minWR = Math.min(...decay.filter(d => d.winRate !== null).map(d => d.winRate), randomBaseline - 5);
@@ -181,7 +194,6 @@ function DecayCurve({ decay, randomBaseline, patternName }) {
             </div>
           );
           const pct = Math.max(0, Math.min(100, ((d.winRate - minWR) / range) * 100));
-          const isRandom = Math.abs(d.winRate - randomBaseline) < 3;
           const col = d.winRate >= 60 ? '#16a34a' : d.winRate >= 50 ? '#d97706' : '#dc2626';
           const isBest = decay.filter(x => x.winRate !== null).every(x => d.winRate >= x.winRate);
           return (
@@ -194,7 +206,6 @@ function DecayCurve({ decay, randomBaseline, patternName }) {
             </div>
           );
         })}
-        {/* Random baseline reference */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
           <div style={{ fontSize: 9, color: '#94a3b8' }}>{randomBaseline}%</div>
           <div style={{ width: '100%', background: '#f0f4ff', borderRadius: 3, height: 40, display: 'flex', alignItems: 'flex-end' }}>
@@ -203,7 +214,6 @@ function DecayCurve({ decay, randomBaseline, patternName }) {
           <div style={{ fontSize: 9, color: '#a0aec0' }}>RAND</div>
         </div>
       </div>
-      {/* Best exit day */}
       {decay.filter(d => d.winRate !== null).length > 0 && (() => {
         const best = decay.filter(d => d.winRate !== null).reduce((b, d) => d.winRate > b.winRate ? d : b);
         const worst = decay.filter(d => d.winRate !== null).reduce((b, d) => d.winRate < b.winRate ? d : b);
@@ -429,6 +439,22 @@ export default function Home() {
                     <div style={{ fontSize: 11, fontWeight: 700, padding: '5px 14px', borderRadius: 20, background: sigCol, color: W, letterSpacing: 1, fontFamily: 'Syne,sans-serif' }}>{sig.direction}</div>
                   </div>
                 </div>
+
+                {/* SESSION 4: Confidence Gauge — Active Signal */}
+                {(() => {
+                  const confidence = getConfidence(sig.winRate, result.randomBaseline, sig.instances, sig.kelly, sig.decay);
+                  return (
+                    <ConfidenceGauge
+                      score={confidence.score}
+                      grade={confidence.grade}
+                      label={confidence.label}
+                      color={confidence.color}
+                      components={confidence.components}
+                      patternName={sig.name}
+                    />
+                  );
+                })()}
+
                 {[{ label: 'Win probability', val: sig.winRate, col: sigCol }, { label: 'Loss probability', val: 100 - sig.winRate, col: '#94a3b8' }].map(pb => (
                   <div key={pb.label} style={{ margin: '10px 0' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: MUTED, marginBottom: 5, fontWeight: 500 }}>
@@ -449,14 +475,12 @@ export default function Home() {
                   ))}
                 </div>
 
-                {/* Edge Decay for active signal */}
                 {sig.decay && (
                   <div style={{ background: W, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '14px 16px', marginTop: 14 }}>
                     <DecayCurve decay={sig.decay} randomBaseline={result.randomBaseline} patternName={sig.pattern} />
                   </div>
                 )}
 
-                {/* Kelly */}
                 <div style={{ marginTop: 14, background: N, borderRadius: 12, padding: '18px 20px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
                     <div style={{ fontSize: 11, color: G, fontWeight: 700, letterSpacing: 1 }}>◈ KELLY POSITION SIZING</div>
@@ -496,7 +520,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Patterns with decay — click to expand */}
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: 2, marginBottom: 6, textTransform: 'uppercase', fontWeight: 500 }}>Historical Patterns — Click to see edge decay</div>
             <div style={{ fontSize: 10, color: '#a0aec0', marginBottom: 12 }}>Random baseline: {result.randomBaseline}% · 30+ instances required · Sorted by expected value</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
@@ -526,6 +549,22 @@ export default function Home() {
                       <span style={{ fontSize: 11, fontWeight: 700, color: p.ev >= 0 ? '#16a34a' : '#dc2626' }}>EV: {p.evStr}</span>
                       {p.reliable && p.kelly > 0 && <span style={{ fontSize: 11, color: N, fontWeight: 600 }}>Half Kelly: {(p.kelly * 50).toFixed(1)}%</span>}
                     </div>
+
+                    {/* SESSION 4: Confidence Gauge — Pattern Cards */}
+                    {(() => {
+                      const confidence = getConfidence(p.winRate, result.randomBaseline, p.instances, p.kelly, p.decay);
+                      return (
+                        <ConfidenceGauge
+                          score={confidence.score}
+                          grade={confidence.grade}
+                          label={confidence.label}
+                          color={confidence.color}
+                          components={confidence.components}
+                          patternName={p.name}
+                        />
+                      );
+                    })()}
+
                     <div style={{ fontSize: 11, color: MUTED, marginBottom: isExpanded ? 12 : 0 }}>{p.desc}</div>
                     {isExpanded && (
                       <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 12, marginTop: 4 }}>
@@ -537,7 +576,6 @@ export default function Home() {
               })}
             </div>
 
-            {/* EV Table */}
             <div style={{ fontSize: 11, color: MUTED, letterSpacing: 2, marginBottom: 10, textTransform: 'uppercase', fontWeight: 500 }}>Expected Value Summary</div>
             <div className="card" style={{ overflowX: 'auto', marginBottom: 24 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
