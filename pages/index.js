@@ -147,11 +147,11 @@ const UNIVERSE = [
   { ticker: 'FURY.V', cat: 'TSX-V' },
 ];
 
-const CATEGORIES   = ['All','Mega Cap','Large Cap','Mid Cap','Speculative','TSX','TSX-V'];
-const GRADES       = ['A','B','C','D','F'];
+const CATEGORIES    = ['All','Mega Cap','Large Cap','Mid Cap','Speculative','TSX','TSX-V'];
+const GRADES        = ['A','B','C','D','F'];
 const TOP_N_OPTIONS = [5,10,20,50,999];
-const CAT_COLORS   = {'Mega Cap':'#7c3aed','Large Cap':'#1d4ed8','Mid Cap':'#0369a1','Speculative':'#dc2626','TSX':'#b45309','TSX-V':'#166534'};
-const GRADE_COLORS = {A:'#00C896',B:'#7BD47A',C:'#F4C542',D:'#F4874B',F:'#E05252'};
+const CAT_COLORS    = {'Mega Cap':'#7c3aed','Large Cap':'#1d4ed8','Mid Cap':'#0369a1','Speculative':'#dc2626','TSX':'#b45309','TSX-V':'#166534'};
+const GRADE_COLORS  = {A:'#00C896',B:'#7BD47A',C:'#F4C542',D:'#F4874B',F:'#E05252'};
 
 const PATTERN_PLAIN = {
   'Gap Down 3%+':        'Stock dropped hard today — history says it often bounces back',
@@ -162,28 +162,59 @@ const PATTERN_PLAIN = {
   'Intraday Reversal':   'Hit a high then sold off hard — potential reversal signal',
 };
 
-function signalExpiry(bestDay) {
-  if (!bestDay) return 'unclear';
-  if (bestDay.day === 1) return 'Exit tomorrow';
-  return `Exit in ${bestDay.day} days`;
+function signalExpiry(bestDay){if(!bestDay)return'unclear';if(bestDay.day===1)return'Exit tomorrow';return`Exit in ${bestDay.day} days`;}
+function gradeOrder(g){return{A:0,B:1,C:2,D:3,F:4}[g]??5;}
+
+// ── Market context fetcher ────────────────────────────────────────────────────
+async function fetchMarketContext() {
+  try {
+    const res  = await fetch('/api/stock?ticker=SPY&days=30');
+    const data = await res.json();
+    if (!data['Time Series (Daily)']) return { regime: 'NEUTRAL', spyChange: 0 };
+    const dates  = Object.keys(data['Time Series (Daily)']).sort((a,b)=>b.localeCompare(a));
+    const closes = dates.slice(0,21).map(d=>parseFloat(data['Time Series (Daily)'][d]['4. close']));
+    const current  = closes[0];
+    const ma20     = closes.reduce((a,b)=>a+b,0)/closes.length;
+    const spyChange = ((closes[0]-closes[1])/closes[1]*100);
+    const diff = ((current - ma20) / ma20) * 100;
+    let regime = 'NEUTRAL';
+    if (diff > 0.5)  regime = 'BULLISH';
+    if (diff < -0.5) regime = 'BEARISH';
+    return { regime, spyChange: parseFloat(spyChange.toFixed(2)), ma20: parseFloat(ma20.toFixed(2)), current };
+  } catch(e) {
+    return { regime: 'NEUTRAL', spyChange: 0 };
+  }
 }
 
-function gradeOrder(g) { return {A:0,B:1,C:2,D:3,F:4}[g]??5; }
+// ── Earnings proximity fetcher ────────────────────────────────────────────────
+async function fetchEarningsDays(ticker) {
+  // Yahoo Finance quoteSummary endpoint for earnings date
+  try {
+    const res  = await fetch(`/api/stock?ticker=${ticker}&days=5`);
+    const data = await res.json();
+    // Yahoo sometimes includes earningsTimestamp in meta — check quoteType
+    // As a fallback we return null (unknown) — this is safe, no penalty applied
+    if (data.earningsDays !== undefined) return data.earningsDays;
+    return null;
+  } catch(e) {
+    return null;
+  }
+}
 
 // ── Core maths ────────────────────────────────────────────────────────────────
-function calcStats(ts, numDays) {
-  const dates   = Object.keys(ts).sort((a,b)=>b.localeCompare(a)).slice(0,numDays);
-  if (dates.length<10) throw new Error('Not enough data');
-  const closes  = dates.map(d=>parseFloat(ts[d]['4. close']));
-  const opens   = dates.map(d=>parseFloat(ts[d]['1. open']));
-  const highs   = dates.map(d=>parseFloat(ts[d]['2. high']));
-  const lows    = dates.map(d=>parseFloat(ts[d]['3. low']));
-  const volumes = dates.map(d=>parseFloat(ts[d]['5. volume']));
-  const changes = [];
-  for (let i=0;i<closes.length-1;i++) changes.push((closes[i]-closes[i+1])/closes[i+1]*100);
-  const intradayRanges = opens.map((o,i)=>(highs[i]-lows[i])/o*100);
-  const avgChange    = changes.reduce((a,b)=>a+b,0)/changes.length;
-  const avgAbsChange = changes.map(Math.abs).reduce((a,b)=>a+b,0)/changes.length;
+function calcStats(ts, numDays){
+  const dates=Object.keys(ts).sort((a,b)=>b.localeCompare(a)).slice(0,numDays);
+  if(dates.length<10)throw new Error('Not enough data');
+  const closes=dates.map(d=>parseFloat(ts[d]['4. close']));
+  const opens=dates.map(d=>parseFloat(ts[d]['1. open']));
+  const highs=dates.map(d=>parseFloat(ts[d]['2. high']));
+  const lows=dates.map(d=>parseFloat(ts[d]['3. low']));
+  const volumes=dates.map(d=>parseFloat(ts[d]['5. volume']));
+  const changes=[];
+  for(let i=0;i<closes.length-1;i++)changes.push((closes[i]-closes[i+1])/closes[i+1]*100);
+  const intradayRanges=opens.map((o,i)=>(highs[i]-lows[i])/o*100);
+  const avgChange=changes.reduce((a,b)=>a+b,0)/changes.length;
+  const avgAbsChange=changes.map(Math.abs).reduce((a,b)=>a+b,0)/changes.length;
   const maxGain=Math.max(...changes),maxLoss=Math.min(...changes);
   const avgVol=volumes.reduce((a,b)=>a+b,0)/volumes.length;
   const avgIntraday=intradayRanges.reduce((a,b)=>a+b,0)/intradayRanges.length;
@@ -194,7 +225,10 @@ function calcStats(ts, numDays) {
   changes.forEach(c=>{if(c<=-3)buckets['Down 3%+']++;else if(c<=-1)buckets['Down 1-3%']++;else if(c<1)buckets['Flat ±1%']++;else if(c<3)buckets['Up 1-3%']++;else buckets['Up 3%+']++;});
   const randomWins=changes.slice(0,-1).filter(c=>c>0).length;
   const randomBaseline=Math.round(randomWins/(changes.length-1)*100);
-  return {closes,opens,highs,lows,volumes,changes,avgChange,avgAbsChange,maxGain,maxLoss,avgVol,avgIntraday,maxIntraday,stdDev,annualVol,buckets,dates,intradayRanges,randomBaseline};
+  // Relative volume: today vs 20-day average
+  const vol20avg=volumes.slice(0,20).reduce((a,b)=>a+b,0)/Math.min(20,volumes.length);
+  const relativeVolume=parseFloat((volumes[0]/vol20avg).toFixed(2));
+  return{closes,opens,highs,lows,volumes,changes,avgChange,avgAbsChange,maxGain,maxLoss,avgVol,avgIntraday,maxIntraday,stdDev,annualVol,buckets,dates,intradayRanges,randomBaseline,relativeVolume};
 }
 
 function calcDecay(si,changes,horizons=[1,2,3,5,10]){
@@ -254,7 +288,34 @@ function analyzePatterns(stats){
 
 function fmtVol(v){if(v>=1e9)return(v/1e9).toFixed(1)+'B';if(v>=1e6)return(v/1e6).toFixed(1)+'M';if(v>=1e3)return(v/1e3).toFixed(0)+'K';return v.toFixed(0);}
 function fmtMoney(n){if(n>=1e6)return'$'+(n/1e6).toFixed(2)+'M';if(n>=1e3)return'$'+(n/1e3).toFixed(1)+'K';return'$'+n.toFixed(0);}
-function getConfidence(wr,rb,inst,kelly,decay){const ds=decay&&decay.length>=2?(decay[decay.length-1].winRate-decay[0].winRate)/9:null;return computeConfidenceScore({winRate:wr/100,randomWinRate:rb/100,sampleSize:inst,kellyFraction:kelly,decaySlope:ds});}
+
+function getConfidence(wr,rb,inst,kelly,decay,marketRegime,earningsDays,relativeVolume,direction){
+  const ds=decay&&decay.length>=2?(decay[decay.length-1].winRate-decay[0].winRate)/9:null;
+  return computeConfidenceScore({
+    winRate:wr/100,randomWinRate:rb/100,sampleSize:inst,kellyFraction:kelly,decaySlope:ds,
+    marketRegime,earningsDays,relativeVolume,signalDirection:direction
+  });
+}
+
+// ── Market Regime Banner ──────────────────────────────────────────────────────
+function RegimeBanner({regime, spyChange}){
+  if(!regime)return null;
+  const configs={
+    BULLISH:{bg:'#f0fdf4',border:'#bbf7d0',color:'#16a34a',icon:'↑',text:'Market is in a bullish trend — signals are stronger than usual'},
+    BEARISH:{bg:'#fef2f2',border:'#fecaca',color:'#dc2626',icon:'↓',text:'Market is in a bearish trend — treat all bullish signals with caution'},
+    NEUTRAL:{bg:'#fdf3d0',border:'#f5c84244',color:'#92400e',icon:'→',text:'Market is moving sideways — signals rely on stock-specific edge'},
+  };
+  const c=configs[regime]||configs.NEUTRAL;
+  return(
+    <div style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:'10px 16px',marginBottom:16,display:'flex',alignItems:'center',gap:12}}>
+      <div style={{fontSize:20,color:c.color,fontWeight:800}}>{c.icon}</div>
+      <div>
+        <div style={{fontSize:11,fontWeight:700,color:c.color,marginBottom:2}}>MARKET REGIME: {regime}</div>
+        <div style={{fontSize:12,color:c.color}}>{c.text} &nbsp;·&nbsp; SPY {spyChange>=0?'+':''}{spyChange}% today</div>
+      </div>
+    </div>
+  );
+}
 
 function DecayCurve({decay,randomBaseline}){
   const valid=decay.filter(d=>d.winRate!==null);
@@ -292,26 +353,22 @@ function HeroSignal({r,rank,onDive}){
         <span style={{fontFamily:'Syne,sans-serif',fontSize:24,fontWeight:800,color:'#fff'}}>{r.ticker}</span>
         <span style={{fontSize:14,fontWeight:600,color:changePos?'#4ade80':'#f87171'}}>{changePos?'+':''}{r.change}%</span>
       </div>
-      <div style={{fontSize:12,color:'rgba(255,255,255,0.4)',marginBottom:16}}>${r.price}</div>
+      <div style={{fontSize:12,color:'rgba(255,255,255,0.4)',marginBottom:12}}>${r.price}</div>
+      {/* Context note */}
+      {r.confidence.contextNote&&(
+        <div style={{fontSize:10,color:'rgba(255,255,255,0.55)',background:'rgba(255,255,255,0.06)',borderRadius:6,padding:'6px 10px',marginBottom:12,lineHeight:1.5}}>{r.confidence.contextNote}</div>
+      )}
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:16}}>
         {[
           {label:'Win probability',val:r.activeSignal.winRate+'%',col:r.activeSignal.winRate>=60?'#4ade80':'#fbbf24'},
           {label:'Beats coin flip by',val:(r.activeSignal.edgeVsRandom>0?'+':'')+r.activeSignal.edgeVsRandom+'%',col:r.activeSignal.edgeVsRandom>0?'#4ade80':'#f87171'},
           {label:'Suggested position',val:positionPct+'% of portfolio',col:'#a5f3fc'},
           {label:'Signal expires',val:signalExpiry(r.activeSignal.bestDay),col:'#fcd34d'},
-        ].map(item=>(
-          <div key={item.label} style={{background:'rgba(255,255,255,0.05)',borderRadius:8,padding:'10px 12px'}}>
-            <div style={{fontSize:9,color:'rgba(255,255,255,0.35)',letterSpacing:1,marginBottom:4,textTransform:'uppercase'}}>{item.label}</div>
-            <div style={{fontSize:13,fontWeight:700,color:item.col}}>{item.val}</div>
-          </div>
-        ))}
+        ].map(item=>(<div key={item.label} style={{background:'rgba(255,255,255,0.05)',borderRadius:8,padding:'10px 12px'}}><div style={{fontSize:9,color:'rgba(255,255,255,0.35)',letterSpacing:1,marginBottom:4,textTransform:'uppercase'}}>{item.label}</div><div style={{fontSize:13,fontWeight:700,color:item.col}}>{item.val}</div></div>))}
       </div>
       <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
         <div style={{width:36,height:36,borderRadius:8,border:`2px solid ${r.confidence.color}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,fontWeight:800,color:r.confidence.color,fontFamily:'Syne,sans-serif'}}>{r.confidence.grade}</div>
-        <div>
-          <div style={{fontSize:12,color:r.confidence.color,fontWeight:600}}>{r.confidence.label}</div>
-          <div style={{fontSize:10,color:'rgba(255,255,255,0.3)'}}>{r.confidence.score}/100 confidence</div>
-        </div>
+        <div><div style={{fontSize:12,color:r.confidence.color,fontWeight:600}}>{r.confidence.label}</div><div style={{fontSize:10,color:'rgba(255,255,255,0.3)'}}>{r.confidence.score}/100 confidence</div></div>
       </div>
       <div style={{fontSize:11,color:'rgba(255,255,255,0.5)',lineHeight:1.6,marginBottom:14,borderTop:'1px solid rgba(255,255,255,0.08)',paddingTop:12}}>{PATTERN_PLAIN[r.activeSignal.name]||r.activeSignal.desc}</div>
       <button onClick={()=>onDive(r.ticker)} style={{width:'100%',background:col,border:'none',borderRadius:10,padding:'10px',color:'#0f1f5c',fontSize:11,fontWeight:800,fontFamily:'Syne,sans-serif',cursor:'pointer',letterSpacing:1}}>↗ FULL ANALYSIS</button>
@@ -319,110 +376,44 @@ function HeroSignal({r,rank,onDive}){
   );
 }
 
-// ── Track Record Tab ──────────────────────────────────────────────────────────
-function TrackRecordTab({signals, onClear, updating}){
-  const stats = getTrackStats(signals);
-  const sorted = [...signals].sort((a,b)=>b.timestamp-a.timestamp);
-
-  if (signals.length===0) return(
-    <div style={{textAlign:'center',padding:'60px 20px'}}>
-      <div style={{fontSize:40,opacity:0.08,marginBottom:16}}>📊</div>
-      <div style={{fontSize:15,fontWeight:600,color:'#0a1540',marginBottom:8}}>No signals tracked yet</div>
-      <div style={{fontSize:12,color:'#6b7ab5',lineHeight:1.8,maxWidth:400,margin:'0 auto'}}>
-        Run a scan and signals will be automatically saved here.<br/>
-        Come back tomorrow and we'll show you what happened.
-      </div>
-    </div>
-  );
-
+function TrackRecordTab({signals,onClear,updating}){
+  const stats=getTrackStats(signals);
+  const sorted=[...signals].sort((a,b)=>b.timestamp-a.timestamp);
+  if(signals.length===0)return(<div style={{textAlign:'center',padding:'60px 20px'}}><div style={{fontSize:40,opacity:0.08,marginBottom:16}}>📊</div><div style={{fontSize:15,fontWeight:600,color:'#0a1540',marginBottom:8}}>No signals tracked yet</div><div style={{fontSize:12,color:'#6b7ab5',lineHeight:1.8,maxWidth:400,margin:'0 auto'}}>Run a scan and signals will be automatically saved here.<br/>Come back tomorrow and we'll show you what happened.</div></div>);
   return(
     <div className="fade">
-      {/* Stats summary */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:10,marginBottom:24}}>
         {[
           {label:'Signals tracked',val:stats.total,sub:`${stats.open} still open`,col:'#0f1f5c'},
           {label:'Closed trades',val:stats.closed,sub:`${stats.wins}W · ${stats.losses}L`,col:'#0f1f5c'},
           {label:'Actual win rate',val:stats.winRate!==null?stats.winRate+'%':'—',sub:stats.avgPredictedWR?`Predicted: ${stats.avgPredictedWR}%`:'Not enough data',col:stats.winRate>=60?'#16a34a':stats.winRate>=50?'#d97706':'#dc2626'},
           {label:'Avg return',val:stats.avgReturn!==null?(stats.avgReturn>=0?'+':'')+stats.avgReturn+'%':'—',sub:'Per closed trade',col:stats.avgReturn>=0?'#16a34a':'#dc2626'},
-        ].map((c,i)=>(
-          <div key={i} style={{background:'#fff',borderRadius:14,border:'1px solid #dde3f5',padding:'14px 16px'}}>
-            <div style={{fontSize:10,color:'#6b7ab5',marginBottom:6,fontWeight:500}}>{c.label}</div>
-            <div style={{fontFamily:'Syne,sans-serif',fontSize:24,fontWeight:800,color:c.col}}>{c.val}</div>
-            <div style={{fontSize:10,color:'#6b7ab5',marginTop:3}}>{c.sub}</div>
-          </div>
-        ))}
+        ].map((c,i)=>(<div key={i} style={{background:'#fff',borderRadius:14,border:'1px solid #dde3f5',padding:'14px 16px'}}><div style={{fontSize:10,color:'#6b7ab5',marginBottom:6,fontWeight:500}}>{c.label}</div><div style={{fontFamily:'Syne,sans-serif',fontSize:24,fontWeight:800,color:c.col}}>{c.val}</div><div style={{fontSize:10,color:'#6b7ab5',marginTop:3}}>{c.sub}</div></div>))}
       </div>
-
-      {/* Grade performance */}
       {stats.closed>=3&&(
         <div style={{background:'#fff',borderRadius:14,border:'1px solid #dde3f5',padding:'18px 20px',marginBottom:20}}>
           <div style={{fontSize:11,color:'#6b7ab5',letterSpacing:2,textTransform:'uppercase',fontWeight:600,marginBottom:14}}>Performance by Grade</div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {GRADES.map(g=>{
-              const gs=stats.byGrade[g];
-              if(gs.total===0)return null;
-              const col=GRADE_COLORS[g];
-              return(
-                <div key={g} style={{background:col+'12',border:`1px solid ${col}33`,borderRadius:10,padding:'12px 16px',minWidth:100,textAlign:'center'}}>
-                  <div style={{fontSize:18,fontWeight:800,color:col,fontFamily:'Syne,sans-serif',marginBottom:4}}>{g}</div>
-                  <div style={{fontSize:13,fontWeight:700,color:gs.winRate>=60?'#16a34a':gs.winRate>=50?'#d97706':'#dc2626'}}>{gs.winRate!==null?gs.winRate+'%':'—'}</div>
-                  <div style={{fontSize:10,color:'#6b7ab5',marginTop:2}}>{gs.total} trade{gs.total!==1?'s':''}</div>
-                  {gs.avgReturn!==null&&<div style={{fontSize:10,fontWeight:600,color:gs.avgReturn>=0?'#16a34a':'#dc2626',marginTop:2}}>{gs.avgReturn>=0?'+':''}{gs.avgReturn}% avg</div>}
-                </div>
-              );
-            })}
+            {GRADES.map(g=>{const gs=stats.byGrade[g];if(gs.total===0)return null;const col=GRADE_COLORS[g];return(<div key={g} style={{background:col+'12',border:`1px solid ${col}33`,borderRadius:10,padding:'12px 16px',minWidth:100,textAlign:'center'}}><div style={{fontSize:18,fontWeight:800,color:col,fontFamily:'Syne,sans-serif',marginBottom:4}}>{g}</div><div style={{fontSize:13,fontWeight:700,color:gs.winRate>=60?'#16a34a':gs.winRate>=50?'#d97706':'#dc2626'}}>{gs.winRate!==null?gs.winRate+'%':'—'}</div><div style={{fontSize:10,color:'#6b7ab5',marginTop:2}}>{gs.total} trade{gs.total!==1?'s':''}</div>{gs.avgReturn!==null&&<div style={{fontSize:10,fontWeight:600,color:gs.avgReturn>=0?'#16a34a':'#dc2626',marginTop:2}}>{gs.avgReturn>=0?'+':''}{gs.avgReturn}% avg</div>}</div>);})}
           </div>
         </div>
       )}
-
-      {/* Signal log */}
-      <div style={{fontSize:11,color:'#6b7ab5',letterSpacing:2,textTransform:'uppercase',fontWeight:500,marginBottom:10}}>
-        Signal Log {updating&&<span style={{fontSize:10,color:'#f5c842',marginLeft:8,animation:'scanpulse 1.5s ease infinite'}}>● Updating prices...</span>}
-      </div>
+      <div style={{fontSize:11,color:'#6b7ab5',letterSpacing:2,textTransform:'uppercase',fontWeight:500,marginBottom:10}}>Signal Log {updating&&<span style={{fontSize:10,color:'#f5c842',marginLeft:8,animation:'scanpulse 1.5s ease infinite'}}>● Updating prices...</span>}</div>
       <div style={{background:'#fff',borderRadius:14,border:'1px solid #dde3f5',overflowX:'auto',marginBottom:16}}>
         <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-          <thead>
-            <tr style={{borderBottom:'2px solid #f0f4ff'}}>
-              {['Date','Ticker','Pattern','Grade','Entry','Current','Return','Outcome','Days ago'].map(h=>(
-                <th key={h} style={{fontSize:9,color:'#6b7ab5',letterSpacing:1,textTransform:'uppercase',padding:'10px 12px',textAlign:'left',fontWeight:600,whiteSpace:'nowrap'}}>{h}</th>
-              ))}
-            </tr>
-          </thead>
+          <thead><tr style={{borderBottom:'2px solid #f0f4ff'}}>{['Date','Ticker','Pattern','Grade','Entry','Current','Return','Outcome','Days ago'].map(h=>(<th key={h} style={{fontSize:9,color:'#6b7ab5',letterSpacing:1,textTransform:'uppercase',padding:'10px 12px',textAlign:'left',fontWeight:600,whiteSpace:'nowrap'}}>{h}</th>))}</tr></thead>
           <tbody>
             {sorted.map((s,i)=>{
               const outcomeCol=s.outcome==='WIN'?'#16a34a':s.outcome==='LOSS'?'#dc2626':'#d97706';
               const outcomeBg=s.outcome==='WIN'?'#f0fdf4':s.outcome==='LOSS'?'#fef2f2':'#fffbeb';
               const gradeCol=GRADE_COLORS[s.grade]||'#6b7ab5';
               const retCol=s.returnPct===null?'#6b7ab5':s.returnPct>=0?'#16a34a':'#dc2626';
-              return(
-                <tr key={s.id} style={{borderBottom:'1px solid #f0f4ff'}}>
-                  <td style={{padding:'10px 12px',color:'#6b7ab5',whiteSpace:'nowrap'}}>{formatDate(s.date)}</td>
-                  <td style={{padding:'10px 12px',fontWeight:700,color:'#0a1540',fontFamily:'Syne,sans-serif'}}>{s.ticker}</td>
-                  <td style={{padding:'10px 12px',color:'#6b7ab5',fontSize:11}}>{s.pattern}</td>
-                  <td style={{padding:'10px 12px'}}>
-                    <span style={{fontSize:12,fontWeight:800,color:gradeCol,background:gradeCol+'18',border:`1px solid ${gradeCol}44`,borderRadius:6,padding:'2px 8px'}}>{s.grade}</span>
-                  </td>
-                  <td style={{padding:'10px 12px',color:'#0a1540',fontWeight:500}}>${s.entryPrice?.toFixed(2)}</td>
-                  <td style={{padding:'10px 12px',color:'#0a1540'}}>{s.currentPrice?'$'+s.currentPrice.toFixed(2):'—'}</td>
-                  <td style={{padding:'10px 12px',fontWeight:700,color:retCol}}>{s.returnPct!==null?(s.returnPct>=0?'+':'')+s.returnPct+'%':'—'}</td>
-                  <td style={{padding:'10px 12px'}}>
-                    <span style={{fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:10,background:outcomeBg,color:outcomeCol,border:`1px solid ${outcomeCol}33`}}>
-                      {s.outcome||'OPEN'}
-                    </span>
-                  </td>
-                  <td style={{padding:'10px 12px',color:'#6b7ab5'}}>{getDaysSince(s.date)}d</td>
-                </tr>
-              );
+              return(<tr key={s.id} style={{borderBottom:'1px solid #f0f4ff'}}><td style={{padding:'10px 12px',color:'#6b7ab5',whiteSpace:'nowrap'}}>{formatDate(s.date)}</td><td style={{padding:'10px 12px',fontWeight:700,color:'#0a1540',fontFamily:'Syne,sans-serif'}}>{s.ticker}</td><td style={{padding:'10px 12px',color:'#6b7ab5',fontSize:11}}>{s.pattern}</td><td style={{padding:'10px 12px'}}><span style={{fontSize:12,fontWeight:800,color:gradeCol,background:gradeCol+'18',border:`1px solid ${gradeCol}44`,borderRadius:6,padding:'2px 8px'}}>{s.grade}</span></td><td style={{padding:'10px 12px',color:'#0a1540',fontWeight:500}}>${s.entryPrice?.toFixed(2)}</td><td style={{padding:'10px 12px',color:'#0a1540'}}>{s.currentPrice?'$'+s.currentPrice.toFixed(2):'—'}</td><td style={{padding:'10px 12px',fontWeight:700,color:retCol}}>{s.returnPct!==null?(s.returnPct>=0?'+':'')+s.returnPct+'%':'—'}</td><td style={{padding:'10px 12px'}}><span style={{fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:10,background:outcomeBg,color:outcomeCol,border:`1px solid ${outcomeCol}33`}}>{s.outcome||'OPEN'}</span></td><td style={{padding:'10px 12px',color:'#6b7ab5'}}>{getDaysSince(s.date)}d</td></tr>);
             })}
           </tbody>
         </table>
       </div>
-
-      <div style={{display:'flex',justifyContent:'flex-end'}}>
-        <button onClick={onClear} style={{background:'none',border:'1px solid #fecaca',borderRadius:8,padding:'6px 14px',color:'#dc2626',fontSize:11,cursor:'pointer',fontFamily:'Inter,sans-serif'}}>
-          Clear all records
-        </button>
-      </div>
+      <div style={{display:'flex',justifyContent:'flex-end'}}><button onClick={onClear} style={{background:'none',border:'1px solid #fecaca',borderRadius:8,padding:'6px 14px',color:'#dc2626',fontSize:11,cursor:'pointer'}}>Clear all records</button></div>
     </div>
   );
 }
@@ -449,16 +440,20 @@ export default function Home(){
   const [filterDirection,setFilterDirection]=useState('All');
   const [filterCategory,setFilterCategory]=useState('All');
   const [filterTopN,setFilterTopN]=useState(10);
-
-  // Track record state
   const [trackedSignals,setTrackedSignals]=useState([]);
   const [updatingPrices,setUpdatingPrices]=useState(false);
 
-  // ── Load + auto-update track record on mount ──────────────────────────────
+  // Session 10 — market context state
+  const [marketContext,setMarketContext]=useState({regime:null,spyChange:0});
+  const [contextLoaded,setContextLoaded]=useState(false);
+
+  // Load track record + market context on mount
   useEffect(()=>{
     const signals=loadAllSignals();
     setTrackedSignals(signals);
-    if(signals.length>0) autoUpdatePrices(signals);
+    if(signals.length>0)autoUpdatePrices(signals);
+    // Fetch market context once on load
+    fetchMarketContext().then(ctx=>{setMarketContext(ctx);setContextLoaded(true);});
   },[]);
 
   const autoUpdatePrices=useCallback(async(signals)=>{
@@ -466,7 +461,6 @@ export default function Home(){
     if(openSignals.length===0)return;
     setUpdatingPrices(true);
     const updates=[];
-    // batch — fetch unique tickers only
     const uniqueTickers=[...new Set(openSignals.map(s=>s.ticker))];
     for(const t of uniqueTickers){
       try{
@@ -475,24 +469,18 @@ export default function Home(){
         if(data['Time Series (Daily)']){
           const latestDate=Object.keys(data['Time Series (Daily)']).sort((a,b)=>b.localeCompare(a))[0];
           const currentPrice=parseFloat(data['Time Series (Daily)'][latestDate]['4. close']);
-          // apply to all signals for this ticker
-          openSignals.filter(s=>s.ticker===t).forEach(s=>{
-            updates.push({id:s.id,currentPrice});
-          });
+          openSignals.filter(s=>s.ticker===t).forEach(s=>{updates.push({id:s.id,currentPrice});});
         }
       }catch(e){}
       await new Promise(r=>setTimeout(r,80));
     }
-    if(updates.length>0){
-      const updated=updateSignalPrices(updates);
-      setTrackedSignals(updated);
-    }
+    if(updates.length>0){const updated=updateSignalPrices(updates);setTrackedSignals(updated);}
     setUpdatingPrices(false);
   },[]);
 
   const top3=useMemo(()=>{
     if(scanResults.length===0)return[];
-    return [...scanResults].sort((a,b)=>{const gd=gradeOrder(a.confidence.grade)-gradeOrder(b.confidence.grade);return gd!==0?gd:b.confidence.score-a.confidence.score;}).slice(0,3);
+    return[...scanResults].sort((a,b)=>{const gd=gradeOrder(a.confidence.grade)-gradeOrder(b.confidence.grade);return gd!==0?gd:b.confidence.score-a.confidence.score;}).slice(0,3);
   },[scanResults]);
 
   const filteredResults=useMemo(()=>{
@@ -525,6 +513,9 @@ export default function Home(){
 
   const runScan=async()=>{
     setScanning(true);setScanResults([]);setScanProgress(0);setExpandedScan(null);
+    // Refresh market context at scan time
+    const ctx=await fetchMarketContext();
+    setMarketContext(ctx);
     const hits=[];
     for(let i=0;i<UNIVERSE.length;i++){
       const{ticker:t,cat}=UNIVERSE[i];
@@ -537,38 +528,27 @@ export default function Home(){
         const stats=calcStats(data['Time Series (Daily)'],500);
         const{patterns,activeSignal,randomBaseline}=analyzePatterns(stats);
         if(activeSignal){
-          const confidence=getConfidence(activeSignal.winRate,randomBaseline,activeSignal.instances,activeSignal.kelly,activeSignal.decay);
-          hits.push({ticker:t,category:cat,price:stats.closes[0].toFixed(2),change:stats.changes[0].toFixed(2),activeSignal,patterns,randomBaseline,stats,confidence,plainDesc:PATTERN_PLAIN[activeSignal.name]||activeSignal.desc});
-
-          // ── SESSION 9: Auto-save signal to track record ──
-          saveSignal({
-            ticker:t,
-            pattern:activeSignal.name,
-            grade:confidence.grade,
-            score:confidence.score,
-            direction:activeSignal.direction,
-            entryPrice:activeSignal.entry,
-            stopLoss:activeSignal.stopLoss,
-            target:activeSignal.target,
-            winRate:activeSignal.winRate,
-            edgeVsRandom:activeSignal.edgeVsRandom,
-            bestExitDay:activeSignal.bestDay?.day||5,
-            category:cat,
-          });
+          // Session 10: compute context-aware confidence
+          const confidence=getConfidence(
+            activeSignal.winRate,randomBaseline,activeSignal.instances,
+            activeSignal.kelly,activeSignal.decay,
+            ctx.regime,          // market regime
+            null,                // earnings days — null = no penalty (Yahoo free tier doesn't provide this reliably)
+            stats.relativeVolume, // relative volume from calcStats
+            activeSignal.direction
+          );
+          hits.push({ticker:t,category:cat,price:stats.closes[0].toFixed(2),change:stats.changes[0].toFixed(2),activeSignal,patterns,randomBaseline,stats,confidence,plainDesc:PATTERN_PLAIN[activeSignal.name]||activeSignal.desc,relativeVolume:stats.relativeVolume});
+          saveSignal({ticker:t,pattern:activeSignal.name,grade:confidence.grade,score:confidence.score,direction:activeSignal.direction,entryPrice:activeSignal.entry,stopLoss:activeSignal.stopLoss,target:activeSignal.target,winRate:activeSignal.winRate,edgeVsRandom:activeSignal.edgeVsRandom,bestExitDay:activeSignal.bestDay?.day||5,category:cat});
         }
       }catch(e){}
       await new Promise(r=>setTimeout(r,100));
     }
     hits.sort((a,b)=>{const gd=gradeOrder(a.confidence.grade)-gradeOrder(b.confidence.grade);return gd!==0?gd:b.confidence.score-a.confidence.score;});
     setScanResults(hits);setScanProgress(100);setScanStatus('');setScanning(false);
-    // Refresh track record display
     setTrackedSignals(loadAllSignals());
   };
 
-  const handleClearRecords=()=>{
-    if(window.confirm('Clear all tracked signals? This cannot be undone.')){{clearAllSignals();setTrackedSignals([]);}}
-  };
-
+  const handleClearRecords=()=>{if(window.confirm('Clear all tracked signals? This cannot be undone.')){clearAllSignals();setTrackedSignals([]);}};
   const toggleGrade=g=>setFilterGrades(prev=>prev.includes(g)?prev.filter(x=>x!==g):[...prev,g]);
 
   const portfolioVal=parseFloat(portfolio.replace(/[^0-9.]/g,''))||0;
@@ -576,8 +556,15 @@ export default function Home(){
   const sigCol=sig?.direction==='BULLISH'?'#16a34a':sig?.direction==='BEARISH'?'#dc2626':'#d97706';
   const sigBg=sig?.direction==='BULLISH'?'#f0fdf4':sig?.direction==='BEARISH'?'#fef2f2':'#fffbeb';
   const kellyPct=sig?.kelly||0;
-
   const trackedCount=trackedSignals.length;
+
+  // Volume badge helper
+  const volBadge=(rv)=>{
+    if(!rv)return null;
+    if(rv>=1.5)return{text:`${rv.toFixed(1)}x volume`,col:'#16a34a',bg:'#f0fdf4',border:'#bbf7d0'};
+    if(rv<0.7)return{text:'Low volume',col:'#d97706',bg:'#fffbeb',border:'#f5c84266'};
+    return null;
+  };
 
   return(
     <>
@@ -598,72 +585,68 @@ export default function Home(){
         .pat-card{cursor:pointer;transition:box-shadow 0.2s;}.pat-card:hover{box-shadow:0 4px 20px rgba(15,31,92,0.08);}
         .scan-card{cursor:pointer;transition:box-shadow 0.2s;}.scan-card:hover{box-shadow:0 4px 20px rgba(15,31,92,0.1);}
         .chip{border:none;border-radius:8px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;transition:all 0.15s;font-family:'Inter',sans-serif;}
-        .nav-tab{border:none;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;transition:all 0.15s;position:relative;}
       `}</style>
 
       {/* NAV */}
-      <nav style={{background:N,padding:'0 32px',display:'flex',alignItems:'center',justifyContent:'space-between',height:60,position:'sticky',top:0,zIndex:100,boxShadow:'0 2px 20px rgba(15,31,92,0.3)'}}>
+      <nav style={{background:N,padding:'0 24px',display:'flex',alignItems:'center',justifyContent:'space-between',height:60,position:'sticky',top:0,zIndex:100,boxShadow:'0 2px 20px rgba(15,31,92,0.3)'}}>
         <div style={{display:'flex',alignItems:'center',gap:10}}>
           <div style={{width:32,height:32,background:G,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,color:N,fontWeight:800,fontFamily:'Syne,sans-serif'}}>C</div>
           <span style={{fontFamily:'Syne,sans-serif',fontSize:18,fontWeight:800,color:W}}>Cerrado Edge</span>
         </div>
         <div style={{display:'flex',gap:4}}>
-          {[
-            {id:'scanner',label:'◎ Scanner'},
-            {id:'single', label:'↗ Deep Dive'},
-            {id:'track',  label:`📊 Track Record${trackedCount>0?' ('+trackedCount+')':''}`},
-          ].map(tab=>(
-            <button key={tab.id} className="nav-tab" onClick={()=>setMode(tab.id)}
-              style={{background:mode===tab.id?'rgba(245,200,66,0.15)':'none',color:mode===tab.id?G:'rgba(255,255,255,0.6)',fontWeight:mode===tab.id?600:400}}>
-              {tab.label}
-            </button>
+          {[{id:'scanner',label:'◎ Scanner'},{id:'single',label:'↗ Deep Dive'},{id:'track',label:`📊 Track Record${trackedCount>0?' ('+trackedCount+')':''}`}].map(tab=>(
+            <button key={tab.id} onClick={()=>setMode(tab.id)} style={{background:mode===tab.id?'rgba(245,200,66,0.15)':'none',border:'none',padding:'6px 14px',borderRadius:6,color:mode===tab.id?G:'rgba(255,255,255,0.6)',fontSize:12,fontWeight:mode===tab.id?600:400,cursor:'pointer'}}>{tab.label}</button>
           ))}
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <div style={{fontSize:9,color:'rgba(255,255,255,0.4)',border:'1px solid rgba(255,255,255,0.2)',padding:'3px 8px',borderRadius:4,letterSpacing:1}}>LIVE DATA</div>
+          {/* Live regime indicator in nav */}
+          {contextLoaded&&marketContext.regime&&(
+            <div style={{fontSize:9,fontWeight:700,padding:'3px 10px',borderRadius:10,background:marketContext.regime==='BULLISH'?'rgba(22,163,74,0.2)':marketContext.regime==='BEARISH'?'rgba(220,38,38,0.2)':'rgba(245,200,66,0.15)',color:marketContext.regime==='BULLISH'?'#4ade80':marketContext.regime==='BEARISH'?'#f87171':G,letterSpacing:1}}>
+              SPY {marketContext.regime} {marketContext.spyChange>=0?'+':''}{marketContext.spyChange}%
+            </div>
+          )}
           <div style={{background:G,color:N,fontSize:9,fontWeight:800,padding:'4px 10px',borderRadius:12,letterSpacing:1,fontFamily:'Syne,sans-serif'}}>BETA</div>
         </div>
       </nav>
 
       <div style={{maxWidth:900,margin:'0 auto',padding:'32px 24px 80px'}}>
 
-        {/* Hero */}
         {mode!=='track'&&(
           <div style={{textAlign:'center',padding:'40px 20px 32px',maxWidth:600,margin:'0 auto 32px'}}>
-            <div style={{display:'inline-block',fontSize:10,letterSpacing:3,color:N,marginBottom:14,background:'#fdf3d0',padding:'5px 14px',borderRadius:20,fontWeight:600}}>◎ {UNIVERSE.length} STOCKS · 6 PATTERNS · REAL EDGE · DAILY</div>
+            <div style={{display:'inline-block',fontSize:10,letterSpacing:3,color:N,marginBottom:14,background:'#fdf3d0',padding:'5px 14px',borderRadius:20,fontWeight:600}}>◎ {UNIVERSE.length} STOCKS · 6 PATTERNS · MARKET CONTEXT · DAILY</div>
             <h1 style={{fontFamily:'Syne,sans-serif',fontSize:38,fontWeight:800,lineHeight:1.15,marginBottom:14,color:N}}>
               {mode==='scanner'?<>Find high-probability<br/>trade ideas today.</>:<>Deep analysis.<br/>Every stock.</>}
             </h1>
             <p style={{color:MUTED,fontSize:14,lineHeight:1.8}}>
               {mode==='scanner'
-                ?'Stop guessing. We scan '+UNIVERSE.length+' stocks, score every signal, and rank today\'s best setups by edge — not hype.'
-                :'Enter any ticker for the full quantitative breakdown — patterns, probabilities, position sizing and signal timing.'}
+                ?'Stop guessing. We scan '+UNIVERSE.length+' stocks, check market conditions, volume, and pattern edge — then rank today\'s best setups.'
+                :'Full quantitative breakdown — patterns, probabilities, market context, position sizing and signal timing.'}
             </p>
           </div>
         )}
 
-        {/* ══ TRACK RECORD TAB ══ */}
+        {/* ══ TRACK RECORD ══ */}
         {mode==='track'&&(
           <div className="fade">
             <div style={{textAlign:'center',padding:'32px 20px 24px',maxWidth:600,margin:'0 auto 24px'}}>
               <h1 style={{fontFamily:'Syne,sans-serif',fontSize:34,fontWeight:800,color:N,marginBottom:10}}>Track Record</h1>
-              <p style={{color:MUTED,fontSize:13,lineHeight:1.8}}>
-                Every signal from every scan is saved here automatically.<br/>
-                Prices update in the background each time you open the tool.
-              </p>
+              <p style={{color:MUTED,fontSize:13,lineHeight:1.8}}>Every signal from every scan is saved here automatically.<br/>Prices update in the background each time you open the tool.</p>
               {updatingPrices&&<div style={{fontSize:11,color:G,marginTop:10,animation:'scanpulse 1.5s ease infinite'}}>● Updating current prices...</div>}
             </div>
             <TrackRecordTab signals={trackedSignals} onClear={handleClearRecords} updating={updatingPrices}/>
           </div>
         )}
 
-        {/* ══ SCANNER MODE ══ */}
+        {/* ══ SCANNER ══ */}
         {mode==='scanner'&&(
           <div className="fade">
+            {/* Market regime banner */}
+            {contextLoaded&&<RegimeBanner regime={marketContext.regime} spyChange={marketContext.spyChange}/>}
+
             <div className="card" style={{marginBottom:20,padding:'24px 28px',textAlign:'center'}}>
               <div style={{fontSize:13,color:MUTED,marginBottom:6,lineHeight:1.8}}>
-                No ticker needed. Scans <strong style={{color:TEXT}}>{UNIVERSE.length} stocks</strong> across 6 market cap categories.<br/>
-                Signals are saved to your Track Record automatically.
+                No ticker needed. Scans <strong style={{color:TEXT}}>{UNIVERSE.length} stocks</strong> with market regime, volume, and pattern edge all factored in.<br/>
+                Signals saved to Track Record automatically.
               </div>
               <div style={{fontSize:11,color:'#a0aec0',marginBottom:22}}>Takes 3–4 minutes · Filters apply instantly without rescanning</div>
               <div style={{display:'flex',gap:10,justifyContent:'center',alignItems:'center',marginBottom:20,flexWrap:'wrap'}}>
@@ -677,65 +660,34 @@ export default function Home(){
                 style={{background:scanning?'#e5e7eb':`linear-gradient(135deg,${G},#e8a800)`,border:'none',borderRadius:12,padding:'14px 56px',color:scanning?'#9ca3af':N,fontSize:15,fontWeight:800,fontFamily:'Syne,sans-serif',cursor:scanning?'not-allowed':'pointer',letterSpacing:1,boxShadow:scanning?'none':'0 4px 20px rgba(245,200,66,0.5)'}}>
                 {scanning?'SCANNING MARKET...':'◎ SCAN MARKET'}
               </button>
-              {scanning&&(
-                <div style={{marginTop:20}}>
-                  <div style={{height:6,background:BG,borderRadius:3,overflow:'hidden',marginBottom:8}}><div style={{height:'100%',width:scanProgress+'%',background:`linear-gradient(90deg,${G},#e8a800)`,borderRadius:3,transition:'width 0.4s ease'}}/></div>
-                  <div style={{fontSize:11,color:MUTED,animation:'scanpulse 1.5s ease infinite'}}>{scanStatus} — {scanProgress}%</div>
-                </div>
-              )}
+              {scanning&&(<div style={{marginTop:20}}><div style={{height:6,background:BG,borderRadius:3,overflow:'hidden',marginBottom:8}}><div style={{height:'100%',width:scanProgress+'%',background:`linear-gradient(90deg,${G},#e8a800)`,borderRadius:3,transition:'width 0.4s ease'}}/></div><div style={{fontSize:11,color:MUTED,animation:'scanpulse 1.5s ease infinite'}}>{scanStatus} — {scanProgress}%</div></div>)}
             </div>
 
-            {/* Top 3 */}
             {top3.length>0&&(
               <div className="fade" style={{marginBottom:28}}>
                 <div style={{fontSize:11,color:MUTED,letterSpacing:2,textTransform:'uppercase',fontWeight:600,marginBottom:14,textAlign:'center'}}>★ Today's Best Setups</div>
                 <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
                   {top3.map((r,i)=><HeroSignal key={r.ticker} r={r} rank={i} onDive={diveInto}/>)}
                 </div>
-                {portfolioVal===0&&<div style={{textAlign:'center',marginTop:12,fontSize:11,color:MUTED}}>💡 Enter your portfolio size above to see suggested position sizes in dollars</div>}
+                {portfolioVal===0&&<div style={{textAlign:'center',marginTop:12,fontSize:11,color:MUTED}}>💡 Enter your portfolio size above to see position sizes in dollars</div>}
               </div>
             )}
 
-            {/* Filter bar */}
             {scanResults.length>0&&(
               <div className="card" style={{marginBottom:20,padding:'18px 22px'}}>
-                <div style={{fontSize:10,color:MUTED,letterSpacing:2,textTransform:'uppercase',fontWeight:600,marginBottom:14}}>Filter All Results</div>
+                <div style={{fontSize:10,color:MUTED,letterSpacing:2,textTransform:'uppercase',fontWeight:600,marginBottom:14}}>Filter Results</div>
                 <div style={{display:'flex',gap:20,flexWrap:'wrap',marginBottom:14,alignItems:'flex-start'}}>
-                  <div>
-                    <div style={{fontSize:10,color:MUTED,marginBottom:6,fontWeight:500}}>Grade</div>
-                    <div style={{display:'flex',gap:5}}>
-                      {GRADES.map(g=>{const active=filterGrades.includes(g);const col=GRADE_COLORS[g];return(<button key={g} className="chip" onClick={()=>toggleGrade(g)} style={{background:active?col+'22':W,color:active?col:MUTED,border:`1px solid ${active?col+'66':BORDER}`}}>{g}</button>);})}
-                      <button className="chip" onClick={()=>setFilterGrades([...GRADES])} style={{background:BG,color:MUTED,border:`1px solid ${BORDER}`}}>All</button>
-                      <button className="chip" onClick={()=>setFilterGrades([])} style={{background:BG,color:MUTED,border:`1px solid ${BORDER}`}}>None</button>
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{fontSize:10,color:MUTED,marginBottom:6,fontWeight:500}}>Direction</div>
-                    <div style={{display:'flex',gap:5}}>
-                      {['All','BULLISH','WATCH'].map(d=>{const active=filterDirection===d;const col=d==='BULLISH'?'#16a34a':d==='WATCH'?'#d97706':N;return(<button key={d} className="chip" onClick={()=>setFilterDirection(d)} style={{background:active?col+'18':W,color:active?col:MUTED,border:`1px solid ${active?col+'44':BORDER}`}}>{d}</button>);})}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{fontSize:10,color:MUTED,marginBottom:6,fontWeight:500}}>Show top</div>
-                    <div style={{display:'flex',gap:5}}>
-                      {TOP_N_OPTIONS.map(n=>{const active=filterTopN===n;return(<button key={n} className="chip" onClick={()=>setFilterTopN(n)} style={{background:active?N:W,color:active?G:MUTED,border:`1px solid ${active?N:BORDER}`}}>{n===999?'All':n}</button>);})}
-                    </div>
-                  </div>
+                  <div><div style={{fontSize:10,color:MUTED,marginBottom:6,fontWeight:500}}>Grade</div><div style={{display:'flex',gap:5}}>{GRADES.map(g=>{const active=filterGrades.includes(g);const col=GRADE_COLORS[g];return(<button key={g} className="chip" onClick={()=>toggleGrade(g)} style={{background:active?col+'22':W,color:active?col:MUTED,border:`1px solid ${active?col+'66':BORDER}`}}>{g}</button>);})} <button className="chip" onClick={()=>setFilterGrades([...GRADES])} style={{background:BG,color:MUTED,border:`1px solid ${BORDER}`}}>All</button><button className="chip" onClick={()=>setFilterGrades([])} style={{background:BG,color:MUTED,border:`1px solid ${BORDER}`}}>None</button></div></div>
+                  <div><div style={{fontSize:10,color:MUTED,marginBottom:6,fontWeight:500}}>Direction</div><div style={{display:'flex',gap:5}}>{['All','BULLISH','WATCH'].map(d=>{const active=filterDirection===d;const col=d==='BULLISH'?'#16a34a':d==='WATCH'?'#d97706':N;return(<button key={d} className="chip" onClick={()=>setFilterDirection(d)} style={{background:active?col+'18':W,color:active?col:MUTED,border:`1px solid ${active?col+'44':BORDER}`}}>{d}</button>);})}</div></div>
+                  <div><div style={{fontSize:10,color:MUTED,marginBottom:6,fontWeight:500}}>Show top</div><div style={{display:'flex',gap:5}}>{TOP_N_OPTIONS.map(n=>{const active=filterTopN===n;return(<button key={n} className="chip" onClick={()=>setFilterTopN(n)} style={{background:active?N:W,color:active?G:MUTED,border:`1px solid ${active?N:BORDER}`}}>{n===999?'All':n}</button>);})}</div></div>
                 </div>
-                <div>
-                  <div style={{fontSize:10,color:MUTED,marginBottom:6,fontWeight:500}}>Market Cap</div>
-                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                    {CATEGORIES.map(cat=>{const active=filterCategory===cat;const col=CAT_COLORS[cat]||N;return(<button key={cat} className="chip" onClick={()=>setFilterCategory(cat)} style={{background:active?col+'18':W,color:active?col:MUTED,border:`1px solid ${active?col+'55':BORDER}`}}>{cat}</button>);})}
-                  </div>
-                </div>
-                <div style={{marginTop:12,fontSize:11,color:MUTED,borderTop:`1px solid ${BORDER}`,paddingTop:10}}>
-                  Showing <strong style={{color:TEXT}}>{filteredResults.length}</strong> of <strong style={{color:TEXT}}>{scanResults.length}</strong> signals · {UNIVERSE.length} stocks scanned
-                </div>
+                <div><div style={{fontSize:10,color:MUTED,marginBottom:6,fontWeight:500}}>Market Cap</div><div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{CATEGORIES.map(cat=>{const active=filterCategory===cat;const col=CAT_COLORS[cat]||N;return(<button key={cat} className="chip" onClick={()=>setFilterCategory(cat)} style={{background:active?col+'18':W,color:active?col:MUTED,border:`1px solid ${active?col+'55':BORDER}`}}>{cat}</button>);})}</div></div>
+                <div style={{marginTop:12,fontSize:11,color:MUTED,borderTop:`1px solid ${BORDER}`,paddingTop:10}}>Showing <strong style={{color:TEXT}}>{filteredResults.length}</strong> of <strong style={{color:TEXT}}>{scanResults.length}</strong> signals · {UNIVERSE.length} stocks scanned</div>
               </div>
             )}
 
             {!scanning&&scanProgress===0&&(<div style={{display:'flex',flexDirection:'column',alignItems:'center',minHeight:160,justifyContent:'center',gap:10}}><div style={{fontSize:40,opacity:0.07}}>◎</div><div style={{color:'#cbd5e0',fontSize:11,letterSpacing:2}}>HIT SCAN MARKET TO FIND TODAY'S OPPORTUNITIES</div></div>)}
-            {!scanning&&scanProgress===100&&filteredResults.length===0&&(<div className="card" style={{textAlign:'center',padding:40}}><div style={{fontSize:28,opacity:0.1,marginBottom:10}}>◎</div><div style={{color:MUTED,fontSize:13,fontWeight:500}}>{scanResults.length===0?'No active signals found today':'No signals match your current filters'}</div><div style={{color:'#cbd5e0',fontSize:11,marginTop:5}}>{scanResults.length>0?'Try adding more grades or changing the filters':'The market is quiet — no patterns forming right now'}</div></div>)}
+            {!scanning&&scanProgress===100&&filteredResults.length===0&&(<div className="card" style={{textAlign:'center',padding:40}}><div style={{fontSize:28,opacity:0.1,marginBottom:10}}>◎</div><div style={{color:MUTED,fontSize:13,fontWeight:500}}>{scanResults.length===0?'No active signals found today':'No signals match your current filters'}</div><div style={{color:'#cbd5e0',fontSize:11,marginTop:5}}>{scanResults.length>0?'Try adding more grades or changing filters':'The market is quiet — no patterns forming right now'}</div></div>)}
 
             {filteredResults.length>0&&(
               <div className="fade">
@@ -748,6 +700,7 @@ export default function Home(){
                     const catCol=CAT_COLORS[r.category]||N;
                     const positionPct=(r.activeSignal.kelly*50).toFixed(1);
                     const positionDollar=portfolioVal>0?fmtMoney(portfolioVal*r.activeSignal.kelly*0.5):null;
+                    const vb=volBadge(r.relativeVolume);
                     return(
                       <div key={i} className="card scan-card" style={{padding:'14px 18px'}} onClick={()=>setExpandedScan(isExp?null:i)}>
                         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
@@ -758,6 +711,7 @@ export default function Home(){
                                 <span style={{fontFamily:'Syne,sans-serif',fontSize:15,fontWeight:800,color:TEXT}}>{r.ticker}</span>
                                 <span style={{fontSize:12,fontWeight:600,color:changePos?'#16a34a':'#dc2626'}}>{changePos?'+':''}{r.change}%</span>
                                 <span style={{fontSize:10,padding:'2px 7px',borderRadius:8,background:catCol+'18',color:catCol,border:`1px solid ${catCol}33`,fontWeight:600}}>{r.category}</span>
+                                {vb&&<span style={{fontSize:10,padding:'2px 7px',borderRadius:8,background:vb.bg,color:vb.col,border:`1px solid ${vb.border}`,fontWeight:600}}>{vb.text}</span>}
                               </div>
                               <div style={{fontSize:11,color:MUTED,marginTop:3}}>
                                 Win: <strong style={{color:r.activeSignal.winRate>=60?'#16a34a':'#d97706'}}>{r.activeSignal.winRate}%</strong>
@@ -773,7 +727,11 @@ export default function Home(){
                             <span style={{fontSize:11,color:MUTED}}>{isExp?'▲':'▼'}</span>
                           </div>
                         </div>
-                        <div style={{marginTop:10,fontSize:11,color:MUTED,lineHeight:1.5,paddingLeft:48}}>{r.plainDesc}{!r.activeSignal.reliable&&<span style={{marginLeft:8,fontSize:10,color:'#d97706',background:'#fffbeb',border:'1px solid #f5c842',padding:'1px 6px',borderRadius:6,fontWeight:600}}>⚠️ Small sample</span>}</div>
+                        <div style={{marginTop:10,fontSize:11,color:MUTED,lineHeight:1.5,paddingLeft:48}}>
+                          {r.plainDesc}
+                          {r.confidence.contextNote&&<span style={{marginLeft:8,fontSize:10,color:'#6b7ab5',fontStyle:'italic'}}>— {r.confidence.contextNote}</span>}
+                          {!r.activeSignal.reliable&&<span style={{marginLeft:8,fontSize:10,color:'#d97706',background:'#fffbeb',border:'1px solid #f5c842',padding:'1px 6px',borderRadius:6,fontWeight:600}}>⚠️ Small sample</span>}
+                        </div>
                         {isExp&&(
                           <div style={{marginTop:16,borderTop:`1px solid ${BORDER}`,paddingTop:16}}>
                             <ConfidenceGauge score={r.confidence.score} grade={r.confidence.grade} label={r.confidence.label} color={r.confidence.color} components={r.confidence.components} patternName={r.activeSignal.name}/>
@@ -793,9 +751,10 @@ export default function Home(){
           </div>
         )}
 
-        {/* ══ DEEP DIVE MODE ══ */}
+        {/* ══ DEEP DIVE ══ */}
         {mode==='single'&&(
           <div className="fade">
+            {contextLoaded&&<RegimeBanner regime={marketContext.regime} spyChange={marketContext.spyChange}/>}
             <div className="card" style={{marginBottom:24,padding:'24px 28px'}}>
               <div style={{display:'flex',gap:10,marginBottom:14,flexWrap:'wrap'}}>
                 <input value={ticker} onChange={e=>setTicker(e.target.value.toUpperCase())} onKeyDown={e=>e.key==='Enter'&&run()}
@@ -829,7 +788,11 @@ export default function Home(){
                 <div className="card" style={{marginBottom:16,display:'flex',alignItems:'center',gap:16,flexWrap:'wrap',background:N}}>
                   <div><div style={{fontFamily:'Syne,sans-serif',fontSize:22,fontWeight:800,color:W}}>{activeTicker}</div><div style={{fontSize:10,color:'rgba(255,255,255,0.4)',marginTop:2}}>{s.changes.length} trading days analysed</div></div>
                   <div style={{display:'flex',alignItems:'baseline',gap:8}}><span style={{fontSize:26,fontWeight:700,color:W}}>${s.closes[0].toFixed(2)}</span><span style={{fontSize:13,fontWeight:600,color:s.changes[0]>=0?'#4ade80':'#f87171'}}>{s.changes[0]>=0?'+':''}{s.changes[0].toFixed(2)}%</span></div>
-                  <div style={{marginLeft:'auto',background:'rgba(255,255,255,0.08)',borderRadius:8,padding:'8px 14px',textAlign:'center'}}><div style={{fontSize:9,color:'rgba(255,255,255,0.4)',letterSpacing:1,marginBottom:3}}>COIN FLIP BASELINE</div><div style={{fontSize:18,fontWeight:700,color:G}}>{result.randomBaseline}%</div><div style={{fontSize:9,color:'rgba(255,255,255,0.3)'}}>Random buy win rate</div></div>
+                  <div style={{display:'flex',gap:10,marginLeft:'auto',alignItems:'center'}}>
+                    {/* Volume badge in deep dive header */}
+                    {s.relativeVolume&&volBadge(s.relativeVolume)&&(()=>{const vb=volBadge(s.relativeVolume);return(<div style={{background:vb.bg,border:`1px solid ${vb.border}`,borderRadius:8,padding:'6px 12px',textAlign:'center'}}><div style={{fontSize:9,color:vb.col,letterSpacing:1,marginBottom:2}}>TODAY'S VOLUME</div><div style={{fontSize:14,fontWeight:700,color:vb.col}}>{vb.text}</div></div>);})()}
+                    <div style={{background:'rgba(255,255,255,0.08)',borderRadius:8,padding:'8px 14px',textAlign:'center'}}><div style={{fontSize:9,color:'rgba(255,255,255,0.4)',letterSpacing:1,marginBottom:3}}>COIN FLIP BASELINE</div><div style={{fontSize:18,fontWeight:700,color:G}}>{result.randomBaseline}%</div><div style={{fontSize:9,color:'rgba(255,255,255,0.3)'}}>Random buy win rate</div></div>
+                  </div>
                 </div>
                 <div style={{background:'#fdf3d0',border:'1px solid #f5c84244',borderRadius:10,padding:'10px 16px',marginBottom:20,fontSize:12,color:'#92400e'}}><strong>Coin flip baseline: {result.randomBaseline}%</strong> — Any pattern scoring above this is genuinely beating random buying.</div>
 
@@ -850,7 +813,15 @@ export default function Home(){
                       <div><div style={{fontFamily:'Syne,sans-serif',fontSize:14,fontWeight:800,color:TEXT}}>◎ Pattern active today</div><div style={{fontSize:11,color:MUTED,marginTop:3}}>{sig.name} — {PATTERN_PLAIN[sig.name]||sig.desc}</div></div>
                       <div style={{display:'flex',gap:8,alignItems:'center'}}>{!sig.reliable&&<div style={{fontSize:10,color:'#d97706',background:'#fffbeb',border:'1px solid #f5c842',padding:'3px 10px',borderRadius:12,fontWeight:600}}>⚠️ Small sample</div>}<div style={{fontSize:11,fontWeight:700,padding:'5px 14px',borderRadius:20,background:sigCol,color:W,letterSpacing:1,fontFamily:'Syne,sans-serif'}}>{sig.direction}</div></div>
                     </div>
-                    {(()=>{const c=getConfidence(sig.winRate,result.randomBaseline,sig.instances,sig.kelly,sig.decay);return<ConfidenceGauge score={c.score} grade={c.grade} label={c.label} color={c.color} components={c.components} patternName={sig.name}/>;})()}
+                    {(()=>{
+                      const c=getConfidence(sig.winRate,result.randomBaseline,sig.instances,sig.kelly,sig.decay,marketContext.regime,null,s.relativeVolume,sig.direction);
+                      return(
+                        <>
+                          {c.contextNote&&<div style={{background:'#f0f4ff',borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:12,color:MUTED,lineHeight:1.6}}>💡 {c.contextNote}</div>}
+                          <ConfidenceGauge score={c.score} grade={c.grade} label={c.label} color={c.color} components={c.components} patternName={sig.name}/>
+                        </>
+                      );
+                    })()}
                     {[{label:'Win probability',val:sig.winRate,col:sigCol},{label:'Loss probability',val:100-sig.winRate,col:'#94a3b8'}].map(pb=>(<div key={pb.label} style={{margin:'10px 0'}}><div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:MUTED,marginBottom:5,fontWeight:500}}><span>{pb.label}</span><span style={{color:pb.col,fontWeight:700}}>{pb.val}%</span></div><div style={{height:8,background:W,borderRadius:4,overflow:'hidden',border:`1px solid ${BORDER}`}}><div style={{height:'100%',width:pb.val+'%',background:pb.col,borderRadius:4,transition:'width 1s cubic-bezier(.4,0,.2,1)',opacity:0.85}}/></div></div>))}
                     <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginTop:16}}>
                       {[{label:'Entry price',val:'$'+sig.entry,col:TEXT,sub:'Buy here'},{label:'Stop loss',val:'$'+sig.stopLoss,col:'#dc2626',sub:'Exit if wrong: '+sig.maxAdverse},{label:'Target',val:'$'+sig.target,col:'#16a34a',sub:'R/R: '+sig.rr}].map(tc=>(<div key={tc.label} style={{background:W,border:`1px solid ${BORDER}`,borderRadius:10,padding:'12px 14px',textAlign:'center'}}><div style={{fontSize:9,color:MUTED,letterSpacing:1,marginBottom:5,textTransform:'uppercase',fontWeight:500}}>{tc.label}</div><div style={{fontFamily:'Syne,sans-serif',fontSize:17,fontWeight:800,color:tc.col}}>{tc.val}</div><div style={{fontSize:9,color:MUTED,marginTop:3}}>{tc.sub}</div></div>))}
@@ -886,7 +857,7 @@ export default function Home(){
                           <div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:10,color:edgeCol,fontWeight:600}}>Beats coin flip: {p.edgeVsRandom>0?'+':''}{p.edgeVsRandom}%</span><span style={{fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:12,background:bg,color:col,border:`1px solid ${col}33`}}>{p.winRate}% win rate</span><span style={{fontSize:10,color:MUTED}}>{isExpanded?'▲':'▼'}</span></div>
                         </div>
                         <div style={{fontSize:11,color:MUTED,marginBottom:6}}>{p.instances} historical trades &nbsp;·&nbsp; Avg win: <strong style={{color:'#16a34a'}}>{p.avgWin}</strong> &nbsp;·&nbsp; Avg loss: <strong style={{color:'#dc2626'}}>{p.avgLoss}</strong> &nbsp;·&nbsp; Expected value: <strong style={{color:p.ev>=0?'#16a34a':'#dc2626'}}>{p.evStr}</strong>{p.reliable&&p.kelly>0&&<>&nbsp;·&nbsp;Suggested position: <strong style={{color:N}}>{(p.kelly*50).toFixed(1)}%{portfolioVal>0?' ('+fmtMoney(portfolioVal*p.kelly*0.5)+')':''}</strong></>}</div>
-                        {(()=>{const c=getConfidence(p.winRate,result.randomBaseline,p.instances,p.kelly,p.decay);return<ConfidenceGauge score={c.score} grade={c.grade} label={c.label} color={c.color} components={c.components} patternName={p.name}/>;})()}
+                        {(()=>{const c=getConfidence(p.winRate,result.randomBaseline,p.instances,p.kelly,p.decay,marketContext.regime,null,s.relativeVolume,p.signal==='green'?'BULLISH':'WATCH');return<ConfidenceGauge score={c.score} grade={c.grade} label={c.label} color={c.color} components={c.components} patternName={p.name}/>;})()}
                         {isExpanded&&<div style={{borderTop:`1px solid ${BORDER}`,paddingTop:12,marginTop:4}}><DecayCurve decay={p.decay} randomBaseline={result.randomBaseline}/></div>}
                       </div>
                     );
